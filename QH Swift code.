@@ -1,0 +1,332 @@
+// MARK: - Main Application Entry Point
+// This struct serves as the entry point of the entire application, where it starts and loads the initial ContentView.
+import SwiftUI
+
+@main
+struct ActivityApp: App {
+    var body: some Scene {
+        WindowGroup {
+            ContentView() // The main content view of the app
+        }
+    }
+}
+
+// MARK: - Models
+
+// The Activity struct represents a user's activity or task. It includes attributes such as title, completion status, recurrence rules, etc.
+import Foundation
+import EventKit
+
+struct Activity: Identifiable {
+    let id: UUID
+    let title: String
+    var isCompleted: Bool
+    var isRecurring: Bool
+    var recurrenceRule: EKRecurrenceRule?
+    var dueDate: Date?
+    var notes: String?
+}
+
+// The Note struct represents a user's note. It is linked to activities by their IDs and stores related content, title, and creation date.
+import Foundation
+
+struct Note: Identifiable {
+    let id: UUID
+    let title: String
+    let content: String
+    let dateCreated: Date
+    let relatedActivities: [UUID] // IDs of related activities
+}
+
+// The DataPoint struct represents a point of data that will be used in analytics. It contains a date, a value, and a completion flag.
+import Foundation
+
+struct DataPoint: Identifiable {
+    let id = UUID()
+    let date: Date
+    let value: Double
+    let completed: Bool
+}
+
+// MARK: - Services
+
+// The EventKitService class is responsible for managing all interactions with Apple's EventKit. 
+// It includes functions to request calendar access, fetch reminders, and update reminder completion.
+import Foundation
+import EventKit
+
+class EventKitService {
+    static let shared = EventKitService()
+    let eventStore = EKEventStore()
+    
+    // Request access to Reminders and Calendars
+    func requestAccess(completion: @escaping (Bool, Bool, Error?) -> Void) {
+        let remindersAccess = eventStore.requestAccess(to: .reminder)
+        let calendarsAccess = eventStore.requestAccess(to: .event)
+        DispatchQueue.global().async {
+            let group = DispatchGroup()
+            var remindersGranted = false
+            var calendarsGranted = false
+            var requestError: Error?
+            
+            group.enter()
+            remindersAccess { granted, error in
+                remindersGranted = granted
+                if let error = error { requestError = error }
+                group.leave()
+            }
+            
+            group.enter()
+            calendarsAccess { granted, error in
+                calendarsGranted = granted
+                if let error = error { requestError = error }
+                group.leave()
+            }
+            
+            group.wait()
+            DispatchQueue.main.async {
+                completion(remindersGranted, calendarsGranted, requestError)
+            }
+        }
+    }
+    
+    // Fetch reminders for today
+    func fetchTodayReminders(completion: @escaping ([EKReminder]) -> Void) {
+        let startDate = Calendar.current.startOfDay(for: Date())
+        let endDate = Calendar.current.date(byAdding: .day, value: 1, to: startDate)
+        let predicate = eventStore.predicateForIncompleteReminders(withDueDateStarting: startDate, ending: endDate, calendars: nil)
+        eventStore.fetchReminders(matching: predicate) { reminders in
+            completion(reminders ?? [])
+        }
+    }
+    
+    // Update reminder completion status
+    func updateReminder(_ reminder: EKReminder, completed: Bool, completion: @escaping (Error?) -> Void) {
+        reminder.isCompleted = completed
+        do {
+            try eventStore.save(reminder, commit: true)
+            completion(nil)
+        } catch {
+            completion(error)
+        }
+    }
+}
+
+// MARK: - ViewModels
+
+// The ActViewModel class handles the logic for the Act section of the application. 
+// It manages reminders by fetching them, requesting access, and toggling their completion status.
+import Foundation
+import EventKit
+
+class ActViewModel: ObservableObject {
+    @Published var reminders: [EKReminder] = []
+    private var eventKitService = EventKitService.shared
+    
+    init() {
+        requestAccess()
+    }
+    
+    // Request access to reminders
+    func requestAccess() {
+        eventKitService.requestAccess { remindersGranted, _, error in
+            if remindersGranted {
+                self.fetchReminders()
+            } else {
+                // Handle access denial (e.g., showing an error message)
+            }
+        }
+    }
+    
+    // Fetch today's reminders
+    func fetchReminders() {
+        eventKitService.fetchTodayReminders { reminders in
+            DispatchQueue.main.async {
+                self.reminders = reminders
+            }
+        }
+    }
+    
+    // Toggle reminder completion status
+    func toggleCompletion(reminder: EKReminder) {
+        eventKitService.updateReminder(reminder, completed: !reminder.isCompleted) { error in
+            if let error = error {
+                // Handle error (e.g., show an error message)
+                print(error.localizedDescription)
+            } else {
+                self.fetchReminders()
+            }
+        }
+    }
+}
+
+// The AnalyticsViewModel class is responsible for fetching and preparing data for the Analytics view of the application.
+import Foundation
+
+class AnalyticsViewModel: ObservableObject {
+    @Published var dataPoints: [DataPoint] = []
+    
+    // Fetch data based on the selected period
+    func fetchData(for period: String) {
+        // Implement data fetching logic here, for example:
+        // dataPoints = fetch data from local database or an API.
+    }
+}
+
+// MARK: - Views
+
+// ContentView is the root view for the entire app.
+import SwiftUI
+
+struct ContentView: View {
+    var body: some View {
+        MainTabView()
+    }
+}
+
+// MainTabView manages the tab navigation for different sections like Home, Act, Calendar, etc.
+import SwiftUI
+
+struct MainTabView: View {
+    var body: some View {
+        TabView {
+            HomeView()
+                .tabItem {
+                    Image(systemName: "house")
+                    Text("Home")
+                }
+            ActView()
+                .tabItem {
+                    Image(systemName: "checkmark.circle")
+                    Text("Act")
+                }
+            CalendarView()
+                .tabItem {
+                    Image(systemName: "calendar")
+                    Text("Calendar")
+                }
+            AnalyticsView()
+                .tabItem {
+                    Image(systemName: "chart.bar")
+                    Text("Analytics")
+                }
+            SettingsView()
+                .tabItem {
+                    Image(systemName: "gear")
+                    Text("Settings")
+                }
+        }
+        .accentColor(Color("BabyBlue"))
+    }
+}
+
+// HomeView is the main view that contains navigation buttons to different parts of the app.
+import SwiftUI
+
+struct HomeView: View {
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 30) {
+                VStack(spacing: 20) {
+                    NavigationLink(destination: ActView()) {
+                        HomeButton(label: "Act")
+                    }
+                    NavigationLink(destination: ReflectView()) {
+                        HomeButton(label: "Reflect")
+                    }
+                    NavigationLink(destination: RepeatView()) {
+                        HomeButton(label: "Repeat")
+                    }
+                    NavigationLink(destination: ListsView()) {
+                        HomeButton(label: "Lists")
+                    }
+                    NavigationLink(destination: NotesView()) {
+                        HomeButton(label: "Notes")
+                    }
+                }
+                Spacer()
+                ProgressSummaryView()
+                    .padding(.bottom, 50)
+            }
+            .navigationTitle("Home")
+        }
+    }
+}
+
+// ActView is responsible for displaying reminders to users. Users can mark tasks as complete or incomplete.
+import SwiftUI
+import EventKit
+
+struct ActView: View {
+    @StateObject private var viewModel = ActViewModel()
+    
+    var body: some View {
+        NavigationView {
+            List {
+                ForEach(viewModel.reminders, id: \.calendarItemIdentifier) { reminder in
+                    ReminderRow(reminder: reminder, toggleCompletion: {
+                        viewModel.toggleCompletion(reminder: reminder)
+                    })
+                }
+            }
+            .navigationTitle("Act")
+            .onAppear {
+                viewModel.fetchReminders()
+            }
+        }
+    }
+}
+
+struct ReminderRow: View {
+    var reminder: EKReminder
+    var toggleCompletion: () -> Void
+    
+    var body: some View {
+        HStack {
+            Button(action: toggleCompletion) {
+                Image(systemName: reminder.isCompleted ? "checkmark.circle.fill" : "circle")
+                    .foregroundColor(reminder.isCompleted ? .green : .gray)
+            }
+            Text(reminder.title)
+                .strikethrough(reminder.isCompleted)
+        }
+    }
+}
+
+// AnalyticsView is responsible for displaying analytics data to users.
+import SwiftUI
+import Charts
+
+struct AnalyticsView: View {
+    @StateObject private var viewModel = AnalyticsViewModel()
+    @State private var selectedPeriod = "Week"
+    let periods = ["Week", "Month", "Quarter", "Half-Year", "Year"]
+    
+    var body: some View {
+        VStack {
+            Picker("Select Period", selection: $selectedPeriod) {
+                ForEach(periods, id: \.self) { period in
+                    Text(period)
+                }
+            }
+            .pickerStyle(SegmentedPickerStyle())
+            .padding()
+            .onChange(of: selectedPeriod) { _ in
+                viewModel.fetchData(for: selectedPeriod)
+            }
+            
+            Chart(viewModel.dataPoints) {
+                LineMark(
+                    x: .value("Date", $0.date),
+                    y: .value("Value", $0.value)
+                )
+            }
+            .chartYScale(domain: 0...100)
+            .frame(height: 200)
+            .padding()
+        }
+        .onAppear {
+            viewModel.fetchData(for: selectedPeriod)
+        }
+    }
+}
